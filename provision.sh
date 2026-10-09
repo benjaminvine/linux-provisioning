@@ -122,32 +122,67 @@ EOF
 
 configure_firewall() {
 
-    local ufw_status
-    local ufw_log
-
-    # If firewall inactive, enable
-    ufw_status=$(sudo ufw status verbose | awk '$1 == "Status:" {print $2}')
-    if [[ "$ufw_status" == 'inactive' ]]; then
-        sudo ufw --force enable
+    # Install ufw if not installed
+    if ! dpkg -s ufw 2> /dev/null | grep -q '^Status: install ok installed'; then
+        sudo apt-get update
+        sudo apt-get install -y ufw
     fi
 
+    # Get ufw status
+    local ufw
+    ufw=$(sudo ufw status verbose)
+
     # If logging disabled or not low, enable logging low
-    ufw_log=$(sudo ufw status verbose | awk '$1 == "Logging:" {print $2 $3}')
-    if [[ ! "$ufw_log" == "on(low)" ]]; then
+    local ufw_log
+    ufw_log=$( printf '%s' "$ufw" | awk '$1 == "Logging:" {print $2 $3}')
+    if [[ ! "$ufw_log" =~ ^(on|On|ON)\((low|Low|LOW)\)$ ]]; then
         sudo ufw logging low
     fi
 
-
     #Update Firewall to allow only trusted IP addresses on port 22
-    sudo ufw allow from 192.168.40.0/24 to any port 22 proto tcp
+    local counter=1
+    local good_rule=0
+    declare -a bad_rules
+    local ufw_rules
+    ufw_rules=$(printf '%s' "$ufw" | sed '1,/^--/d')
+    if [[ ! "$ufw_rules" =~ ^22/tcp[[:space:]]+ALLOW[[:space:]]IN[[:space:]]192\.168\.40\.0/24$ ]]; then
 
+        # Check each rule
+        while read -r line; do
+            
+            # Note if desired rule present, record all undesired rules
+            if [[ "$line" =~ ^22/tcp[[:space:]]+ALLOW[[:space:]]IN[[:space:]]192\.168\.40\.0/24$ ]]; then
+                good_rule=1
+            else
+                bad_rules+=("$counter")
+            fi
+            ((counter++))
+        done <<< "$ufw_rules"
 
+        # Remove undesired rules
+        local i
+        for (( i=${#bad_rules[@]}-1 ; i>=0 ; i-- )); do
+            sudo ufw --force delete "${bad_rules[i]}"
+        done
+
+        # Add desired rule if not present
+        if (( ! good_rule )); then
+            sudo ufw allow from 192.168.40.0/24 to any port 22 proto tcp
+        fi
+    fi
+
+    # If firewall inactive, enable
+    local ufw_status
+    ufw_status=$(printf '%s' "$ufw" | awk '$1 == "Status:" {print $2}')
+    if [[ "$ufw_status" != 'active' ]]; then
+        sudo ufw --force enable
+    fi
 
     # Verify firewall configurations
-    ufw_status=$(sudo ufw status verbose)
-    grep -q 'Status: active' <<< "$ufw_status" &&
-    grep -q 'Logging: on (low)' <<< "$ufw_status" &&
-    grep -qE '22/tcp[[:space:]]+ALLOW IN[[:space:]]+192\.168\.40\.0/24' <<< "$ufw_status" ||
+    ufw=$(sudo ufw status verbose)
+    grep -q 'Status: active' <<< "$ufw" &&
+    grep -q 'Logging: on (low)' <<< "$ufw" &&
+    grep -qE '22/tcp[[:space:]]+ALLOW IN[[:space:]]+192\.168\.40\.0/24' <<< "$ufw" ||
     {
         echo "ERROR: firewall validation failed"
         return 1
