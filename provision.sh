@@ -122,6 +122,37 @@ EOF
 
 configure_firewall() {
 
+    local ufw_status
+    local ufw_log
+
+    # If firewall inactive, enable
+    ufw_status=$(sudo ufw status verbose | awk '$1 == "Status:" {print $2}')
+    if [[ "$ufw_status" == 'inactive' ]]; then
+        sudo ufw --force enable
+    fi
+
+    # If logging disabled or not low, enable logging low
+    ufw_log=$(sudo ufw status verbose | awk '$1 == "Logging:" {print $2 $3}')
+    if [[ ! "$ufw_log" == "on(low)" ]]; then
+        sudo ufw logging low
+    fi
+
+
+    #Update Firewall to allow only trusted IP addresses on port 22
+    sudo ufw allow from 192.168.40.0/24 to any port 22 proto tcp
+
+
+
+    # Verify firewall configurations
+    ufw_status=$(sudo ufw status verbose)
+    grep -q 'Status: active' <<< "$ufw_status" &&
+    grep -q 'Logging: on (low)' <<< "$ufw_status" &&
+    grep -qE '22/tcp[[:space:]]+ALLOW IN[[:space:]]+192\.168\.40\.0/24' <<< "$ufw_status" ||
+    {
+        echo "ERROR: firewall validation failed"
+        return 1
+    }
+
 }
 
 configure_fail2ban
