@@ -132,42 +132,34 @@ configure_firewall() {
     local ufw
     ufw=$(sudo ufw status verbose)
 
-    # If logging disabled or not low, enable logging low
-    local ufw_log
-    ufw_log=$( printf '%s' "$ufw" | awk '$1 == "Logging:" {print $2 $3}')
-    if [[ ! "$ufw_log" =~ ^(on|On|ON)\((low|Low|LOW)\)$ ]]; then
-        sudo ufw logging low
-    fi
-
     #Update Firewall to allow only trusted IP addresses on port 22
-    local counter=1
     local good_rule=0
-    declare -a bad_rules
+    local desired_rule="allow from $TRUSTED_CIDR to any port 22 proto tcp"
+    local desired_line="ufw $desired_rule"
     local ufw_rules
-    ufw_rules=$(printf '%s' "$ufw" | sed '1,/^--/d')
-    if [[ ! "$ufw_rules" =~ ^22/tcp[[:space:]]+ALLOW[[:space:]]IN[[:space:]]192\.168\.40\.0/24$ ]]; then
+    ufw_rules=$(sudo ufw show added | sed '1d')
+
+    # If no rules, add desired rules, otherwise check current rules
+    if [[ -z "$ufw_rules" || "$ufw_rules" == "(None)" ]]; then
+        sudo ufw allow from "$TRUSTED_CIDR" to any port 22 proto tcp
+    elif [[ "$ufw_rules" != "$desired_rule" ]]; then
 
         # Check each rule
         while read -r line; do
             
             # Note if desired rule present, record all undesired rules
-            if [[ "$line" =~ ^22/tcp[[:space:]]+ALLOW[[:space:]]IN[[:space:]]192\.168\.40\.0/24$ ]]; then
+            if [[ "$line" == "$desired_line" ]]; then
                 good_rule=1
             else
-                bad_rules+=("$counter")
+                read -ra rule_args <<< "${line#ufw }"
+                sudo ufw --force delete "${rule_args[@]}"
             fi
-            ((counter++))
         done <<< "$ufw_rules"
-
-        # Remove undesired rules
-        local i
-        for (( i=${#bad_rules[@]}-1 ; i>=0 ; i-- )); do
-            sudo ufw --force delete "${bad_rules[i]}"
-        done
 
         # Add desired rule if not present
         if (( ! good_rule )); then
-            sudo ufw allow from 192.168.40.0/24 to any port 22 proto tcp
+        read -ra add_args <<< "$desired_rule"
+            sudo ufw allow from "$TRUSTED_CIDR" to any port 22 proto tcp
         fi
     fi
 
@@ -176,7 +168,29 @@ configure_firewall() {
     ufw_status=$(printf '%s' "$ufw" | awk '$1 == "Status:" {print $2}')
     if [[ "$ufw_status" != 'active' ]]; then
         sudo ufw --force enable
+        ufw=$(sudo ufw status verbose)
     fi
+
+    # If logging disabled or not low, enable logging low
+    local ufw_log
+    ufw_log=$( printf '%s' "$ufw" | awk '$1 == "Logging:" {print $2 $3}')
+    if [[ ! "$ufw_log" =~ ^on\(low\)$ ]]; then
+        sudo ufw logging low
+    fi
+
+    # Check default policies
+    local ufw_policy
+    ufw_policy=$(printf '%s' "$ufw" | sed -n -e '/Default:/s/ //gp')
+    IFS=',' read -ra policy_args <<< "${ufw_policy#Default:}"
+    for policy in "${policy_args[@]}"; do
+        if [[ "$policy" == *"incoming"* && "$policy" != *"deny"* ]]; then
+            sudo ufw default deny incoming
+        elif [[ "$policy" == *"outgoing"* && "$policy" != *"allow"* ]]; then
+            sudo ufw default allow outgoing
+        elif [[ "$policy" == *"routed"* && "$policy" != *"disabled"* ]]; then
+            sudo ufw default deny routed
+        fi
+    done
 
     # Verify firewall configurations
     ufw=$(sudo ufw status verbose)
@@ -189,7 +203,7 @@ configure_firewall() {
     }
 
 }
-
+TRUSTED_CIDR="192.168.40.0/24"
 configure_fail2ban
 configure_ssh
 configure_firewall
